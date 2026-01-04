@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { margin: 0; background: #000; font-family: 'Arial', sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+        #canvas-container { position: relative; width: auto; height: 95vh; aspect-ratio: 9 / 16; background: #1a1a1a; box-shadow: 0 0 30px rgba(255,255,255,0.1); border-radius: 8px; overflow: hidden; }
+        canvas { display: block; width: 100%; height: 100%; }
+        #scoreboard { position: absolute; top: 20px; width: 100%; display: flex; justify-content: center; gap: 20px; font-size: 28px; font-weight: bold; text-shadow: 2px 2px 4px black; pointer-events: none; z-index: 10; }
+        .score-item { color: white; }
+        #overlay, #winner-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: flex; flex-direction: column; justify-content: center; align-items: center; color: white; z-index: 20; }
+        #winner-screen { display: none; z-index: 30; background: rgba(0,0,0,0.6); }
+        #winner-emoji { font-size: 100px; margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <div id="scoreboard">
+            <div class="score-item" id="s-rock">🪨: 10</div>
+            <div class="score-item" id="s-paper">📄: 10</div>
+            <div class="score-item" id="s-scissors">✂️: 10</div>
+        </div>
+        <div id="overlay"><h1>ROCK PAPER SCISSORS</h1><p>Press SPACE to Start</p></div>
+        <div id="winner-screen"><h2>WINNER!</h2><div id="winner-emoji">🪨</div><p>Press SPACE to Restart</p></div>
+        <canvas id="battleCanvas"></canvas>
+    </div>
+
+<script>
+    const canvas = document.getElementById('battleCanvas');
+    const ctx = canvas.getContext('2d');
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    // --- SOUND SYNTHESIZERS ---
+    function playSound(type) {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const duration = 0.1;
+        const mainGain = audioCtx.createGain();
+        mainGain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        mainGain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+        mainGain.connect(audioCtx.destination);
+
+        if (type === 0) { // ROCK: Low Thud
+            const osc = audioCtx.createOscillator();
+            osc.frequency.setValueAtTime(80, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(20, audioCtx.currentTime + duration);
+            osc.connect(mainGain);
+            osc.start(); osc.stop(audioCtx.currentTime + duration);
+        } 
+        else if (type === 1) { // PAPER: Crinkle
+            const bufferSize = audioCtx.sampleRate * duration;
+            const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) { data[i] = (Math.random() * 2 - 1) * 0.5; }
+            const noise = audioCtx.createBufferSource();
+            noise.buffer = buffer;
+            const filter = audioCtx.createBiquadFilter();
+            filter.type = 'bandpass';
+            filter.frequency.value = 1000;
+            noise.connect(filter); filter.connect(mainGain);
+            noise.start();
+        } 
+        else if (type === 2) { // SCISSORS: Snip
+            const osc = audioCtx.createOscillator();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(1200, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + duration);
+            const snipGain = audioCtx.createGain();
+            snipGain.gain.setValueAtTime(0, audioCtx.currentTime);
+            snipGain.gain.linearRampToValueAtTime(0.1, audioCtx.currentTime + 0.02);
+            snipGain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.05);
+            osc.connect(snipGain); snipGain.connect(audioCtx.destination);
+            osc.start(); osc.stop(audioCtx.currentTime + duration);
+        }
+    }
+
+    const canvasContainer = document.getElementById('canvas-container');
+    function resizeCanvas() { canvas.width = canvasContainer.clientWidth; canvas.height = canvasContainer.clientHeight; }
+    resizeCanvas(); window.addEventListener('resize', resizeCanvas);
+
+    const TOTAL_BALLS = 30, BALL_SPEED = 0.5, BALL_SIZE = 30;
+    const TYPE_ROCK = 0, TYPE_PAPER = 1, TYPE_SCISSORS = 2, EMOJIS = ['🪨', '📄', '✂️'];
+    let balls = [], isRunning = false, gameEnded = false;
+
+    class Ball {
+        constructor(type) {
+            this.radius = BALL_SIZE / 2;
+            this.x = Math.random() * (canvas.width - BALL_SIZE*2) + BALL_SIZE;
+            this.y = Math.random() * (canvas.height - BALL_SIZE*2) + BALL_SIZE;
+            let a = Math.random() * Math.PI * 2;
+            this.vx = Math.cos(a) * BALL_SPEED; this.vy = Math.sin(a) * BALL_SPEED;
+            this.type = type;
+        }
+        draw() { ctx.font = `${BALL_SIZE}px Arial`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(EMOJIS[this.type], this.x, this.y); }
+        update() { this.x += this.vx; this.y += this.vy; if (this.x - this.radius < 0 || this.x + this.radius > canvas.width) this.vx *= -1; if (this.y - this.radius < 0 || this.y + this.radius > canvas.height) this.vy *= -1; }
+    }
+
+    function init() { balls = []; gameEnded = false; document.getElementById('winner-screen').style.display = 'none'; for (let i = 0; i < TOTAL_BALLS; i++) { balls.push(new Ball(i % 3)); } updateScore(); }
+    function determineWinner(t1, t2) { if (t1 === t2) return null; if (t1 === TYPE_ROCK && t2 === TYPE_SCISSORS) return TYPE_ROCK; if (t1 === TYPE_SCISSORS && t2 === TYPE_PAPER) return TYPE_SCISSORS; if (t1 === TYPE_PAPER && t2 === TYPE_ROCK) return TYPE_PAPER; return t2; }
+    
+    function resolveCollision(b1, b2) {
+        const dx = b2.x - b1.x, dy = b2.y - b1.y, dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist < b1.radius + b2.radius) {
+            const overlap = (b1.radius + b2.radius - dist) / 2, nx = dx / dist || 0, ny = dy / dist || 0;
+            b1.x -= nx * overlap; b1.y -= ny * overlap; b2.x += nx * overlap; b2.y += ny * overlap;
+            let tvx = b1.vx, tvy = b1.vy; b1.vx = b2.vx; b1.vy = b2.vy; b2.vx = tvx; b2.vy = tvy;
+            if (b1.type !== b2.type) {
+                const winType = determineWinner(b1.type, b2.type);
+                if (winType !== null) { b1.type = winType; b2.type = winType; updateScore(); playSound(winType); }
+            }
+        }
+    }
+
+    function updateScore() {
+        const r = balls.filter(b => b.type === TYPE_ROCK).length, p = balls.filter(b => b.type === TYPE_PAPER).length, s = balls.filter(b => b.type === TYPE_SCISSORS).length;
+        document.getElementById('s-rock').innerText = `🪨: ${r}`; document.getElementById('s-paper').innerText = `📄: ${p}`; document.getElementById('s-scissors').innerText = `✂️: ${s}`;
+        if (isRunning && !gameEnded) {
+            if (r === TOTAL_BALLS) showWinner(TYPE_ROCK); else if (p === TOTAL_BALLS) showWinner(TYPE_PAPER); else if (s === TOTAL_BALLS) showWinner(TYPE_SCISSORS);
+        }
+    }
+
+    function showWinner(t) { gameEnded = true; document.getElementById('winner-emoji').innerText = EMOJIS[t]; document.getElementById('winner-screen').style.display = 'flex'; }
+    window.addEventListener('keydown', (e) => { if (e.code === 'Space') { isRunning = true; document.getElementById('overlay').style.display = 'none'; init(); } });
+    function animate() { ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, canvas.width, canvas.height); if (isRunning && !gameEnded) { for (let b of balls) b.update(); for (let i = 0; i < balls.length; i++) { for (let j = i + 1; j < balls.length; j++) resolveCollision(balls[i], balls[j]); } } for (let b of balls) b.draw(); requestAnimationFrame(animate); }
+    init(); animate();
+</script>
+</body>
+</html>
